@@ -63,12 +63,14 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MAX_RUNTIME_SECONDS=$((330 * 60))
+          MIN_BATCH_BUDGET_SECONDS=$((100 * 60))
 
           while true; do
             NOW=$(date +%s)
             ELAPSED=$((NOW - START_TIME))
-            if [ "$ELAPSED" -ge "$MAX_RUNTIME_SECONDS" ]; then
-              echo "Reached safe runtime limit; next scheduled run will continue from checkpoint."
+            REMAINING=$((MAX_RUNTIME_SECONDS - ELAPSED))
+            if [ "$REMAINING" -lt "$MIN_BATCH_BUDGET_SECONDS" ]; then
+              echo "Not enough time for another full batch; checkpoint is saved."
               break
             fi
 
