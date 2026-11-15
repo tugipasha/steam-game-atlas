@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       batch_size:
-        description: "Maximum app details to request in this run"
+        description: "Maximum app details to request in each batch"
         required: false
         default: "3000"
   schedule:
-    - cron: "17 */2 * * *"
+    - cron: "17 * * * *"
 
 permissions:
   contents: write
@@ -52,23 +52,39 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip requests
 
-      - name: Collect next batch
+      - name: Collect continuously and checkpoint each batch
+        shell: bash
         env:
           STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
           BATCH_SIZE: ${{ github.event.inputs.batch_size || '3000' }}
           REQUEST_DELAY: "1.5"
           DATA_DIR: data-store
-        run: python scripts/collect.py
-
-      - name: Commit checkpoint and data
-        if: always()
-        shell: bash
         run: |
-          if [ -e data-store/.git ]; then
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MAX_RUNTIME_SECONDS=$((330 * 60))
+
+          while true; do
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START_TIME))
+            if [ "$ELAPSED" -ge "$MAX_RUNTIME_SECONDS" ]; then
+              echo "Reached safe runtime limit; next scheduled run will continue from checkpoint."
+              break
+            fi
+
+            echo "Starting next batch from saved checkpoint..."
+            python scripts/collect.py
+
             cd data-store
             git add -A
             if ! git diff --cached --quiet; then
               git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Update Steam collection checkpoint"
               git push origin HEAD:data
             fi
-          fi
+            cd ..
+
+            if python -c "import json; from pathlib import Path; p=Path('data-store/checkpoint.json'); s=json.loads(p.read_text()) if p.exists() else {}; raise SystemExit(0 if s.get('complete') else 1)"; then
+              echo "Steam catalog collection is complete."
+              break
+            fi
+          done
