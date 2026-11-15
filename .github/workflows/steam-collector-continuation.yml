@@ -1,0 +1,38 @@
+name: Steam collector continuation
+
+on:
+  workflow_run:
+    workflows: ["Steam catalog collector"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  continue-collection:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check whether collection is complete
+        id: checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkpoint=$(gh api "repos/${GITHUB_REPOSITORY}/contents/checkpoint.json?ref=data" --jq '.content' | tr -d '\n' | base64 --decode)
+          complete=$(printf '%s' "$checkpoint" | jq -r '.complete // false')
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+          echo "Collection complete: $complete"
+
+      - name: Dispatch the next collector run
+        if: steps.checkpoint.outputs.complete != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run .github/workflows/steam-collector.yml --ref main
+
+      - name: Report completion
+        if: steps.checkpoint.outputs.complete == 'true'
+        run: echo "All catalog entries have been processed; no further run is needed."
