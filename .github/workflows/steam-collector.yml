@@ -7,8 +7,6 @@ on:
         description: "Maximum app details to request in each batch"
         required: false
         default: "3000"
-  schedule:
-    - cron: "17 * * * *"
 
 permissions:
   contents: write
