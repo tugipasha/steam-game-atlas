@@ -53,9 +53,13 @@ def ensure_catalog():
             apps = response.get("apps", [])
             if not apps:
                 break
-            for app in apps:
+            remaining = 150000 - count
+            page = apps[:remaining]
+            for app in page:
                 out.write(json.dumps(app, ensure_ascii=False) + "\n")
-            count += len(apps)
+            count += len(page)
+            if count >= 150000:
+                break
             next_cursor = int(response.get("last_appid") or apps[-1]["appid"])
             print(f"Catalog: {count} apps; cursor={next_cursor}", flush=True)
             if not response.get("have_more_results") or next_cursor <= cursor:
