@@ -1,1 +1,8 @@
-{"catalog_offset":0,"last_appid":0,"processed":0,"failed_appids":[],"complete":false}
+{
+  "catalog_offset": 3000,
+  "last_appid": 292930,
+  "processed": 3000,
+  "failed_appids": [],
+  "complete": false,
+  "updated_at_utc": "2026-11-15T16:28:53Z"
+}
