@@ -60,8 +60,10 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MAX_RUNTIME_SECONDS=$((330 * 60))
-          MIN_BATCH_BUDGET_SECONDS=$((100 * 60))
+          # Stop well before GitHub's job limit so the run can finish cleanly and trigger continuation.
+          MAX_RUNTIME_SECONDS=$((310 * 60))
+          # Historical 3,000-AppID batches take roughly 80–95 minutes; keep extra headroom.
+          MIN_BATCH_BUDGET_SECONDS=$((110 * 60))
 
           while true; do
             NOW=$(date +%s)
