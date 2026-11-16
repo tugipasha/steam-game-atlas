@@ -149,6 +149,8 @@ async def collect_batch(session, batch, offset, state):
         asyncio.create_task(fetch_details(session, semaphore, pacer, int(entry["appid"])))
         for entry in batch
     ]
+    failed = set(int(x) for x in state.get("failed_appids", []))
+    saved = 0
     completed = 0
     for future in asyncio.as_completed(tasks):
         try:
