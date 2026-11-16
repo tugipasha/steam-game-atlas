@@ -145,34 +145,23 @@ async def fetch_details(session, semaphore, pacer, appid):
 async def collect_batch(session, batch, offset, state):
     semaphore = asyncio.Semaphore(CONCURRENCY)
     pacer = RequestPacer(REQUEST_INTERVAL)
-    tasks = {
-        asyncio.create_task(fetch_details(session, semaphore, pacer, int(entry["appid"]))): entry
+    tasks = [
+        asyncio.create_task(fetch_details(session, semaphore, pacer, int(entry["appid"])))
         for entry in batch
-    }
-    results = {}
-    failed = set(int(x) for x in state.get("failed_appids", []))
+    ]
     completed = 0
-    saved = 0
-
-    for task in asyncio.as_completed(tasks):
-        # as_completed yields futures, so map results by the appid returned by each task.
+    for future in asyncio.as_completed(tasks):
         try:
-            detail = await task
-            appid = int(detail["steam_appid"]) if detail and detail.get("steam_appid") else None
-            if appid is None:
-                # The task's appid is recovered from its result wrapper below.
-                pass
-            results[id(task)] = detail
-        except Exception as exc:
-            print(f"Detail request failed: {exc}", flush=True)
-            results[id(task)] = exc
+            await future
+        except Exception:
+            # The ordered gather below records the exact AppID for each failure.
+            pass
         completed += 1
         if completed % 100 == 0 or completed == len(batch):
             print(f"Progress: {completed}/{len(batch)} completed", flush=True)
 
     # The gather below preserves input order and makes per-AppID failure accounting deterministic.
-    ordered_tasks = list(tasks.keys())
-    ordered_results = await asyncio.gather(*ordered_tasks, return_exceptions=True)
+    ordered_results = await asyncio.gather(*tasks, return_exceptions=True)
     chunk_path = CHUNKS / f"games_{offset}_{offset + len(batch)}.jsonl.gz"
     with gzip.open(chunk_path, "wt", encoding="utf-8") as out:
         for entry, result in zip(batch, ordered_results):
