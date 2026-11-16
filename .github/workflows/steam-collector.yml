@@ -7,6 +7,10 @@ on:
         description: "Maximum app details to request in each batch"
         required: false
         default: "3000"
+      recovery_attempt:
+        description: "Automatic recovery attempt counter"
+        required: false
+        default: "0"
 
 permissions:
   contents: write
@@ -55,6 +59,7 @@ jobs:
         run: python -m py_compile scripts/collect.py
 
       - name: Collect continuously and checkpoint each batch
+        id: collect
         shell: bash
         env:
           STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
@@ -66,7 +71,7 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           # Stop well before GitHub's job limit so the run can finish cleanly and trigger continuation.
-          MAX_RUNTIME_SECONDS=$((310 * 60))
+          MAX_RUNTIME_SECONDS=$((250 * 60))
           # Historical 3,000-AppID batches take roughly 80–95 minutes; keep extra headroom.
           MIN_BATCH_BUDGET_SECONDS=$((110 * 60))
 
@@ -96,23 +101,38 @@ jobs:
             fi
           done
 
-      - name: Dispatch next run if catalog is still incomplete
-        if: success()
+      - name: Continue or recover collector
+        if: always() && steps.collect.outcome != 'skipped'
         env:
           GH_TOKEN: ${{ github.token }}
+          COLLECT_OUTCOME: ${{ steps.collect.outcome }}
+          RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt || '0' }}
         shell: bash
         run: |
           set -euo pipefail
+          if [ "$COLLECT_OUTCOME" != "success" ]; then
+            echo "Collector step ended with $COLLECT_OUTCOME."
+            if [ "$RECOVERY_ATTEMPT" -lt 2 ]; then
+              next_attempt=$((RECOVERY_ATTEMPT + 1))
+              echo "Dispatching bounded recovery attempt $next_attempt/2 from the last saved checkpoint."
+              gh workflow run .github/workflows/steam-collector.yml --repo "$GITHUB_REPOSITORY" --ref main -f recovery_attempt="$next_attempt"
+            else
+              echo "Automatic recovery limit reached; stopping to avoid an endless failure loop."
+              exit 1
+            fi
+            exit 0
+          fi
+
           complete=$(jq -r '.complete // false' data-store/checkpoint.json)
           failed_count=$(jq '.failed_appids | length' data-store/checkpoint.json)
           if [ "$complete" = "true" ]; then
             if [ "$failed_count" -gt 0 ]; then
-              echo "Catalog scan complete with $failed_count unresolved AppIDs retained in checkpoint after retry limits."
+              echo "Catalog scan complete with $failed_count unresolved AppIDs retained after retry limits."
             else
               echo "Collection complete with no unresolved AppIDs."
             fi
             echo "No next run will be dispatched."
           else
             echo "Collection is incomplete ($failed_count failed AppIDs currently recorded); dispatching the next collector run."
-            gh workflow run .github/workflows/steam-collector.yml --repo "$GITHUB_REPOSITORY" --ref main
+            gh workflow run .github/workflows/steam-collector.yml --repo "$GITHUB_REPOSITORY" --ref main -f recovery_attempt="0"
           fi
