@@ -166,7 +166,7 @@ async def fetch_details(session, semaphore, pacer, appid):
     return {key: game[key] for key in KEEP_FIELDS if key in game}
 
 
-async def collect_batch(session, batch, offset, state):
+async def collect_batch(session, batch, offset, state, *, advance_offset=True, chunk_label=None):
     semaphore = asyncio.Semaphore(CONCURRENCY)
     pacer = RequestPacer(REQUEST_INTERVAL)
     tasks = [
@@ -188,7 +188,8 @@ async def collect_batch(session, batch, offset, state):
 
     # The gather below preserves input order and makes per-AppID failure accounting deterministic.
     ordered_results = await asyncio.gather(*tasks, return_exceptions=True)
-    chunk_path = CHUNKS / f"games_{offset}_{offset + len(batch)}.jsonl.gz"
+    chunk_name = f"games_{chunk_label}_{offset}_{offset + len(batch)}.jsonl.gz" if chunk_label else f"games_{offset}_{offset + len(batch)}.jsonl.gz"
+    chunk_path = CHUNKS / chunk_name
     with gzip.open(chunk_path, "wt", encoding="utf-8") as out:
         for entry, result in zip(batch, ordered_results):
             appid = int(entry["appid"])
@@ -202,14 +203,51 @@ async def collect_batch(session, batch, offset, state):
                 saved += 1
             failed.discard(appid)
 
-    state["catalog_offset"] = offset + len(batch)
-    state["last_appid"] = int(batch[-1]["appid"])
-    state["processed"] = int(state.get("processed", 0)) + len(batch)
+    if advance_offset:
+        state["catalog_offset"] = offset + len(batch)
+        state["last_appid"] = int(batch[-1]["appid"])
+        state["processed"] = int(state.get("processed", 0)) + len(batch)
     state["failed_appids"] = sorted(failed)
     state["updated_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     CHECKPOINT.write_text(json.dumps(state, indent=2), encoding="utf-8")
     print(f"Batch finished: scanned={len(batch)}, games_saved={saved}, total_scanned={state['processed']}", flush=True)
     print(f"Checkpoint offset={state['catalog_offset']}; failed={len(failed)}", flush=True)
+
+
+async def retry_failed_appids(session, state):
+    """Retry previously failed AppIDs once per workflow invocation without moving the catalog cursor."""
+    failed_ids = set(int(value) for value in state.get("failed_appids", []))
+    if not failed_ids:
+        return
+
+    retry_entries = []
+    found_ids = set()
+    with gzip.open(CATALOG, "rt", encoding="utf-8") as catalog:
+        for line in catalog:
+            entry = json.loads(line)
+            appid = int(entry.get("appid", 0))
+            if appid in failed_ids:
+                retry_entries.append(entry)
+                found_ids.add(appid)
+                if len(retry_entries) >= BATCH_SIZE:
+                    break
+
+    missing_ids = failed_ids - found_ids
+    if missing_ids:
+        print(f"Warning: {len(missing_ids)} failed AppIDs were not found in the catalog; keeping them in checkpoint.", flush=True)
+
+    if not retry_entries:
+        return
+
+    print(f"Retrying {len(retry_entries)} previously failed AppIDs before new catalog entries.", flush=True)
+    await collect_batch(
+        session,
+        retry_entries,
+        int(state.get("catalog_offset", 0)),
+        state,
+        advance_offset=False,
+        chunk_label="retry",
+    )
 
 
 async def main():
@@ -226,6 +264,10 @@ async def main():
         if state.get("complete"):
             print("Collection is already complete.")
             return
+
+        # Retry old failures once at the start of this invocation. Remaining failures
+        # stay in the checkpoint and can be retried on the next automatic run.
+        await retry_failed_appids(session, state)
 
         batch = []
         offset = int(state.get("catalog_offset", 0))
