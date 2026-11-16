@@ -56,8 +56,8 @@ jobs:
         env:
           STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
           BATCH_SIZE: ${{ github.event.inputs.batch_size || '3000' }}
-          MAX_CONCURRENCY: "10"
-          REQUEST_INTERVAL: "0.35"
+          MAX_CONCURRENCY: "2"
+          REQUEST_INTERVAL: "1.5"
           DATA_DIR: data-store
         run: |
           set -euo pipefail
