@@ -1,10 +1,7 @@
-name: Steam collector continuation
+name: Steam collector manual recovery
 
 on:
-  workflow_run:
-    workflows: ["Steam catalog collector"]
-    types: [completed]
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   actions: write
@@ -12,7 +9,6 @@ permissions:
 
 jobs:
   continue-collection:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check whether collection is complete
