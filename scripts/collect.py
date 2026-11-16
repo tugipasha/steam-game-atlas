@@ -15,6 +15,7 @@ API_KEY = os.getenv("STEAM_API_KEY", "").strip()
 BATCH_SIZE = max(1, int(os.getenv("BATCH_SIZE", "3000")))
 CONCURRENCY = max(1, int(os.getenv("MAX_CONCURRENCY", "10")))
 REQUEST_INTERVAL = max(0.0, float(os.getenv("REQUEST_INTERVAL", "0.35")))
+MAX_FAILED_RETRIES = max(1, int(os.getenv("MAX_FAILED_RETRIES", "3")))
 DATA = Path(os.getenv("DATA_DIR", "data-store"))
 CHUNKS = DATA / "chunks"
 CATALOG = DATA / "catalog.jsonl.gz"
@@ -174,6 +175,7 @@ async def collect_batch(session, batch, offset, state, *, advance_offset=True, c
         for entry in batch
     ]
     failed = set(int(x) for x in state.get("failed_appids", []))
+    retry_attempts = {str(k): int(v) for k, v in state.get("retry_attempts", {}).items()}
     saved = 0
     completed = 0
     for future in asyncio.as_completed(tasks):
@@ -195,6 +197,8 @@ async def collect_batch(session, batch, offset, state, *, advance_offset=True, c
             appid = int(entry["appid"])
             if isinstance(result, Exception):
                 failed.add(appid)
+                if not advance_offset:
+                    retry_attempts[str(appid)] = retry_attempts.get(str(appid), 0) + 1
                 print(f"AppID {appid} failed: {result}", flush=True)
                 continue
             if result:
@@ -202,12 +206,14 @@ async def collect_batch(session, batch, offset, state, *, advance_offset=True, c
                 out.write(json.dumps(result, ensure_ascii=False) + "\n")
                 saved += 1
             failed.discard(appid)
+            retry_attempts.pop(str(appid), None)
 
     if advance_offset:
         state["catalog_offset"] = offset + len(batch)
         state["last_appid"] = int(batch[-1]["appid"])
         state["processed"] = int(state.get("processed", 0)) + len(batch)
     state["failed_appids"] = sorted(failed)
+    state["retry_attempts"] = retry_attempts
     state["updated_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     CHECKPOINT.write_text(json.dumps(state, indent=2), encoding="utf-8")
     print(f"Batch finished: scanned={len(batch)}, games_saved={saved}, total_scanned={state['processed']}", flush=True)
@@ -217,7 +223,15 @@ async def collect_batch(session, batch, offset, state, *, advance_offset=True, c
 async def retry_failed_appids(session, state):
     """Retry previously failed AppIDs once per workflow invocation without moving the catalog cursor."""
     failed_ids = set(int(value) for value in state.get("failed_appids", []))
-    if not failed_ids:
+    attempts = {str(k): int(v) for k, v in state.get("retry_attempts", {}).items()}
+    retryable_ids = {
+        appid for appid in failed_ids
+        if attempts.get(str(appid), 0) < MAX_FAILED_RETRIES
+    }
+    exhausted_ids = failed_ids - retryable_ids
+    if exhausted_ids:
+        print(f"{len(exhausted_ids)} AppIDs reached the retry limit ({MAX_FAILED_RETRIES}); keeping them recorded.", flush=True)
+    if not retryable_ids:
         return
 
     retry_entries = []
@@ -226,15 +240,18 @@ async def retry_failed_appids(session, state):
         for line in catalog:
             entry = json.loads(line)
             appid = int(entry.get("appid", 0))
-            if appid in failed_ids:
+            if appid in retryable_ids:
                 retry_entries.append(entry)
                 found_ids.add(appid)
                 if len(retry_entries) >= BATCH_SIZE:
                     break
 
-    missing_ids = failed_ids - found_ids
+    missing_ids = retryable_ids - found_ids
     if missing_ids:
-        print(f"Warning: {len(missing_ids)} failed AppIDs were not found in the catalog; keeping them in checkpoint.", flush=True)
+        print(f"Warning: {len(missing_ids)} failed AppIDs were not found in the catalog; marking them retry-exhausted.", flush=True)
+        for appid in missing_ids:
+            attempts[str(appid)] = MAX_FAILED_RETRIES
+        state["retry_attempts"] = attempts
 
     if not retry_entries:
         return
@@ -283,9 +300,19 @@ async def main():
                     break
 
         if not batch:
-            state["complete"] = True
+            attempts = {str(k): int(v) for k, v in state.get("retry_attempts", {}).items()}
+            retryable_remaining = [
+                appid for appid in state.get("failed_appids", [])
+                if attempts.get(str(int(appid)), 0) < MAX_FAILED_RETRIES
+            ]
+            state["complete"] = not retryable_remaining
             CHECKPOINT.write_text(json.dumps(state, indent=2), encoding="utf-8")
-            print("Reached end of catalog.")
+            if retryable_remaining:
+                print(f"Reached end of catalog, but {len(retryable_remaining)} failed AppIDs still need retry.", flush=True)
+            elif state.get("failed_appids"):
+                print(f"Catalog scan complete with {len(state['failed_appids'])} unresolved AppIDs retained after {MAX_FAILED_RETRIES} retries.", flush=True)
+            else:
+                print("Reached end of catalog; all AppIDs processed successfully.")
             return
 
         print(f"Starting batch at offset {offset}: {len(batch)} AppIDs; concurrency={CONCURRENCY}; request interval={REQUEST_INTERVAL}s", flush=True)
