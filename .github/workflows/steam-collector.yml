@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: steam-catalog-collector
@@ -21,12 +22,12 @@ jobs:
     timeout-minutes: 350
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -91,3 +92,18 @@ jobs:
               break
             fi
           done
+
+      - name: Dispatch next run if catalog is still incomplete
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          complete=$(jq -r '.complete // false' data-store/checkpoint.json)
+          if [ "$complete" = "true" ]; then
+            echo "Collection complete; no next run will be dispatched."
+          else
+            echo "Collection is incomplete; dispatching the next collector run."
+            gh workflow run .github/workflows/steam-collector.yml --repo "$GITHUB_REPOSITORY" --ref main
+          fi
