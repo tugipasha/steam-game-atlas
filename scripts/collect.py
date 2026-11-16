@@ -32,20 +32,32 @@ KEEP_FIELDS = (
 
 
 class RequestPacer:
-    """Spaces request starts globally, while allowing responses to overlap."""
+    """Global pacing with shared cooldown and adaptive slowdown after HTTP 429."""
     def __init__(self, interval):
         self.interval = interval
         self.lock = asyncio.Lock()
         self.next_start = 0.0
+        self.cooldown_until = 0.0
 
     async def wait(self):
+        while True:
+            async with self.lock:
+                now = asyncio.get_running_loop().time()
+                target = max(self.next_start, self.cooldown_until)
+                delay = target - now
+                if delay <= 0:
+                    self.next_start = now + self.interval
+                    return
+            await asyncio.sleep(delay + random.uniform(0.1, 0.8))
+
+    async def rate_limited(self, retry_after=None):
         async with self.lock:
             now = asyncio.get_running_loop().time()
-            delay = self.next_start - now
-            if delay > 0:
-                await asyncio.sleep(delay)
-            self.next_start = asyncio.get_running_loop().time() + self.interval
-
+            self.interval = min(max(self.interval * 1.8, 1.5), 8.0)
+            pause = max(60.0, retry_after or 0.0)
+            self.cooldown_until = max(self.cooldown_until, now + pause)
+            self.next_start = max(self.next_start, self.cooldown_until)
+            print(f"Shared rate-limit cooldown: {pause:.0f}s; new request interval={self.interval:.2f}s", flush=True)
 
 async def request_json(session, url, params=None, pacer=None, attempts=6):
     for attempt in range(attempts):
@@ -55,6 +67,18 @@ async def request_json(session, url, params=None, pacer=None, attempts=6):
             async with session.get(url, params=params) as response:
                 if response.status in RETRYABLE_STATUS:
                     retry_after = response.headers.get("Retry-After")
+                    if response.status == 429 and pacer:
+                        parsed_retry = None
+                        if retry_after:
+                            try:
+                                parsed_retry = max(1.0, float(retry_after))
+                            except ValueError:
+                                try:
+                                    retry_at = parsedate_to_datetime(retry_after)
+                                    parsed_retry = max(1.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+                                except Exception:
+                                    parsed_retry = None
+                        await pacer.rate_limited(parsed_retry)
                     if retry_after:
                         try:
                             wait = max(1.0, float(retry_after))
