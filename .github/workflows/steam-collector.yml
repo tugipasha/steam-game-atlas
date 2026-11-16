@@ -51,6 +51,9 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip aiohttp
 
+      - name: Validate collector syntax
+        run: python -m py_compile scripts/collect.py
+
       - name: Collect continuously and checkpoint each batch
         shell: bash
         env:
@@ -101,9 +104,15 @@ jobs:
         run: |
           set -euo pipefail
           complete=$(jq -r '.complete // false' data-store/checkpoint.json)
+          failed_count=$(jq '.failed_appids | length' data-store/checkpoint.json)
           if [ "$complete" = "true" ]; then
-            echo "Collection complete; no next run will be dispatched."
+            if [ "$failed_count" -gt 0 ]; then
+              echo "Catalog scan complete with $failed_count unresolved AppIDs retained in checkpoint after retry limits."
+            else
+              echo "Collection complete with no unresolved AppIDs."
+            fi
+            echo "No next run will be dispatched."
           else
-            echo "Collection is incomplete; dispatching the next collector run."
+            echo "Collection is incomplete ($failed_count failed AppIDs currently recorded); dispatching the next collector run."
             gh workflow run .github/workflows/steam-collector.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
