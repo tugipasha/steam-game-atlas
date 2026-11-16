@@ -126,8 +126,8 @@ def main():
         print("Reached end of catalog.")
         return
 
-    stamp = f"{int(time.time())}_{offset}"
-    chunk_path = CHUNKS / f"games_{stamp}.jsonl.gz"
+    # Deterministic range-based name: retrying an unfinished batch replaces the same chunk.
+    chunk_path = CHUNKS / f"games_{offset}_{offset + len(batch)}.jsonl.gz"
     failed = set(int(x) for x in state.get("failed_appids", []))
     done = 0
     saved = 0
