@@ -31,7 +31,8 @@ jobs:
         if: steps.checkpoint.outputs.complete != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run .github/workflows/steam-collector.yml --ref main
+        # Explicitly set the repository; this workflow does not check out a Git working tree.
+        run: gh workflow run .github/workflows/steam-collector.yml --repo "$GITHUB_REPOSITORY" --ref main
 
       - name: Report completion
         if: steps.checkpoint.outputs.complete == 'true'
