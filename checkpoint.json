@@ -1,9 +1,9 @@
 {
-  "catalog_offset": 66000,
-  "last_appid": 1927820,
-  "processed": 66000,
+  "catalog_offset": 69000,
+  "last_appid": 2000570,
+  "processed": 69000,
   "failed_appids": [],
   "complete": false,
-  "updated_at_utc": "2026-11-17T08:53:19Z",
+  "updated_at_utc": "2026-11-17T10:25:12Z",
   "retry_attempts": {}
 }
