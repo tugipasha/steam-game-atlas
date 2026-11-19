@@ -3,7 +3,7 @@
   "last_appid": 4101050,
   "processed": 150000,
   "failed_appids": [],
-  "complete": false,
+  "complete": true,
   "updated_at_utc": "2026-11-19T03:47:21Z",
   "retry_attempts": {}
 }
